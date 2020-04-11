@@ -15,6 +15,13 @@ import org.apache.spark.api.java.function.PairFunction;
 public class KMeans {
 	private static int categoricalCount;
 	private static HashMap<String, Integer> categorical;
+    private static int K;
+    private static boolean[] centroidsState;
+    private static int[] centroidsCorrectCount;
+    private static int[] centroidsCount;
+    private static Random random;
+    private static ArrayList<KPoint> allCenters;
+    private static double p;
 
 
 	public static void main(String[] args) throws Exception {
@@ -24,12 +31,11 @@ public class KMeans {
 
 		// Local Defintions
 		Random random = new Random();
-		int K = 3;
 
 		// Static definitions
 		categoricalCount = 0;
 		categorical = new HashMap<>();
-
+        K = 3;
 
 		// Create a Java Spark Context.
 		SparkConf conf = new SparkConf().setMaster("local").setAppName("kmeans");
@@ -65,6 +71,96 @@ public class KMeans {
 		System.out.println("One center: " + c.get(0).toStr());
 		System.out.println("One center: " + c.get(1).toStr());
 		System.out.println("One center: " + c.get(2).toStr());
+
+		// K Means mapper
+        JavaPairRDD<Integer, List<KPoint>> kMeansMap = input.mapToPair((PairFunction<String, Integer, List<KPoint>>) line -> {
+            KPoint kPoint = new KPoint(line.split(","));
+
+            float[] diffs = new float[c.size()];
+
+            for(int i = 0 ; i < c.size() ; i++){
+                diffs[i] = c.get(i).diff(kPoint);
+            }
+
+            float min = diffs[0];
+            int minInd = 0;
+
+            for(int i = 1; i < diffs.length; i++){
+                if(diffs[i] < min){
+                    min = diffs[i];
+                    minInd = i;
+                }
+            }
+
+            return new Tuple2<>(minInd, kPoint);
+        });
+
+
+        // K Means reducer
+        JavaPairRDD<Integer, List<KPoint>> kMeansReduced = kMeansMap.reduceByKey((Function2<List<KPoint>, List<KPoint>, List<KPoint>>) (kPoints, kPoints2) -> {
+            kPoints.addAll(kPoints2);
+            return kPoints;
+        });
+
+        // Flat
+        JavaRDD<KPoint> kMeans = centroidsReduced.flatMap((FlatMapFunction<Tuple2<Integer, List<KPoint>>, KPoint>) kpoints -> {
+            KPoint nextCentroid = null;
+            int key = kpoints._1;
+            ArrayList<KPoint> kps = kpoints._2;
+
+            for (KPoint point : kps) {
+                if(nextCentroid == null)
+                    nextCentroid = point;
+                else
+                    nextCentroid.add(point);
+
+                Text text = new Text();
+
+                text.set(point.toStr());
+                context.write(key, text);
+            }
+
+            nextCentroid.mean();
+
+            float sse = 0;
+            for(KPoint kp: kps){
+                sse += (float) Math.pow(kp.diff(nextCentroid), 2);
+            }
+
+            HashMap<Integer, Integer> hashMap = new HashMap<Integer, Integer>();
+
+            for(KPoint kp: kps){
+                int label = (int)kp.label;
+                if(hashMap.get(label) == null)
+                    hashMap.put(label, 0);
+                else
+                    hashMap.put(label, hashMap.get(label) + 1);
+            }
+
+            int maxVal = Collections.max(hashMap.values());
+
+            float accuracy = (float) maxVal / kps.size();
+            centroidsCorrectCount[key] = maxVal;
+            centroidsCount[key] = kps.size();
+
+            KPoint oldCentroid = c.get(key);
+            float centroidDiff = oldCentroid.diff(nextCentroid);
+            System.out.println("Centroid: " + key + " has diff: " + centroidDiff);
+
+            if(centroidDiff <= 0.01)
+                centroidsState[key] = false;
+            else
+            {
+                c.set(key, nextCentroid);
+                centroidsState[key] = true;
+            }
+
+            context.write(key, new Text("Centroid is " + nextCentroid.toStr()));
+            context.write(key, new Text("SSE is " + sse));
+            context.write(key, new Text("Accuracy is " + accuracy));
+        });
+
+
 		centroids.saveAsTextFile(outputFile);
 	}
 
