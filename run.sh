@@ -1,0 +1,1 @@
+hdfs dfs -rm -r /user/mahmoud_hdfs/output_spark_kmeans && mvn clean install package && java -jar target/kmenas-1.0.jar hdfs://localhost:8020/user/mahmoud_hdfs/input_kmeans/iris.data hdfs://localhost:8020/user/mahmoud_hdfs/output_spark_kmeans
