@@ -36,6 +36,9 @@ public class KMeans {
 		categoricalCount = 0;
 		categorical = new HashMap<>();
         K = 3;
+		centroidsState = new boolean[K];
+		centroidsCorrectCount = new int[K];
+		centroidsCount = new int[K];
 
 		// Create a Java Spark Context.
 		SparkConf conf = new SparkConf().setMaster("local").setAppName("kmeans");
@@ -68,16 +71,13 @@ public class KMeans {
 		});
 
 		List<KPoint> c = centroids.collect();
-		System.out.println("One center: " + c.get(0).toStr());
-		System.out.println("One center: " + c.get(1).toStr());
-		System.out.println("One center: " + c.get(2).toStr());
 
 		// K Means mapper
         JavaPairRDD<Integer, List<KPoint>> kMeansMap = input.mapToPair((PairFunction<String, Integer, List<KPoint>>) line -> {
-            KPoint kPoint = new KPoint(line.split(","));
+        	String[] words = line.split(",");
+            KPoint kPoint = new KPoint(words);
 
             float[] diffs = new float[c.size()];
-
             for(int i = 0 ; i < c.size() ; i++){
                 diffs[i] = c.get(i).diff(kPoint);
             }
@@ -92,7 +92,11 @@ public class KMeans {
                 }
             }
 
-            return new Tuple2<>(minInd, kPoint);
+
+			ArrayList<KPoint> kPointList = new ArrayList<>();
+			kPointList.add(kPoint);
+
+            return new Tuple2<>(minInd, kPointList);
         });
 
 
@@ -102,22 +106,20 @@ public class KMeans {
             return kPoints;
         });
 
-        // Flat
-        JavaRDD<KPoint> kMeans = centroidsReduced.flatMap((FlatMapFunction<Tuple2<Integer, List<KPoint>>, KPoint>) kpoints -> {
+		// Flat
+        JavaRDD<String> kMeans = kMeansReduced.flatMap((FlatMapFunction<Tuple2<Integer, List<KPoint>>, String>) kpoints -> {
             KPoint nextCentroid = null;
             int key = kpoints._1;
-            ArrayList<KPoint> kps = kpoints._2;
+            List<KPoint> kps = kpoints._2;
+			StringBuilder builder = new StringBuilder();
+			builder.append("Cluster: ").append(key).append('\n');
 
             for (KPoint point : kps) {
                 if(nextCentroid == null)
                     nextCentroid = point;
                 else
                     nextCentroid.add(point);
-
-                Text text = new Text();
-
-                text.set(point.toStr());
-                context.write(key, text);
+				builder.append(point.toStr()).append('\n');
             }
 
             nextCentroid.mean();
@@ -127,7 +129,7 @@ public class KMeans {
                 sse += (float) Math.pow(kp.diff(nextCentroid), 2);
             }
 
-            HashMap<Integer, Integer> hashMap = new HashMap<Integer, Integer>();
+            HashMap<Integer, Integer> hashMap = new HashMap<>();
 
             for(KPoint kp: kps){
                 int label = (int)kp.label;
@@ -155,13 +157,17 @@ public class KMeans {
                 centroidsState[key] = true;
             }
 
-            context.write(key, new Text("Centroid is " + nextCentroid.toStr()));
-            context.write(key, new Text("SSE is " + sse));
-            context.write(key, new Text("Accuracy is " + accuracy));
+            builder.append("Centroid is ").append(nextCentroid.toStr()).append('\n');
+			builder.append("SSE is ").append(sse).append('\n');
+			builder.append("Accuracy is ").append(accuracy).append("\n");
+			builder.append("==========================================");
+			ArrayList<String> result = new ArrayList<>();
+            result.add(builder.toString());
+			return result;
         });
 
 
-		centroids.saveAsTextFile(outputFile);
+		kMeans.saveAsTextFile(outputFile);
 	}
 
 
