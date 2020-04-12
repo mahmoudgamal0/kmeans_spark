@@ -43,7 +43,9 @@ public class KMeans {
 		// Create a Java Spark Context.
 		SparkConf conf = new SparkConf().setMaster("local").setAppName("kmeans");
 		JavaSparkContext sc = new JavaSparkContext(conf);
-		
+
+		long start = System.currentTimeMillis();
+
 		// Load our input data.
 		JavaRDD<String> input = sc.textFile(inputFile);
 
@@ -73,9 +75,10 @@ public class KMeans {
 		List<KPoint> c = centroids.collect();
 
 		int run = 0;
-		int maxIterations = 50;
-		for(int i = 0 ; i < centroidsState.length; i++)
-			centroidsState[i] = true;
+		int maxIterations = 10;
+		Arrays.fill(centroidsState, Boolean.TRUE);
+
+
 
 		while(true){
 			boolean didCentroidsShift = false;
@@ -199,6 +202,8 @@ public class KMeans {
 			run++;
 		}
 
+		long end = System.currentTimeMillis();
+		System.out.println("Total time: " + (end - start) + " ms");
 	}
 
 
