@@ -2,6 +2,7 @@ package com.geekcap.javaworld.sparkexample;
 import java.util.*;
 import java.util.ArrayList;
 
+import org.apache.spark.api.java.function.PairFlatMapFunction;
 import scala.Serializable;
 import scala.Tuple2;
 import org.apache.spark.SparkConf;
@@ -19,9 +20,6 @@ public class KMeans {
     private static boolean[] centroidsState;
     private static int[] centroidsCorrectCount;
     private static int[] centroidsCount;
-    private static Random random;
-    private static ArrayList<KPoint> allCenters;
-    private static double p;
 
 
 	public static void main(String[] args) throws Exception {
@@ -72,13 +70,12 @@ public class KMeans {
 			return temp;
 		});
 
-		List<KPoint> c = centroids.collect();
 
 		int run = 0;
 		int maxIterations = 10;
 		Arrays.fill(centroidsState, Boolean.TRUE);
 
-
+		List<KPoint> c = centroids.collect();
 
 		while(true){
 			boolean didCentroidsShift = false;
@@ -127,7 +124,7 @@ public class KMeans {
 			});
 
 			// Flat
-			JavaRDD<String> kMeans = kMeansReduced.flatMap((FlatMapFunction<Tuple2<Integer, List<KPoint>>, String>) kpoints -> {
+			JavaPairRDD<Integer, String> kMeans = kMeansReduced.flatMapToPair((PairFlatMapFunction<Tuple2<Integer, List<KPoint>>, Integer, String>) kpoints -> {
 				KPoint nextCentroid = null;
 				int key = kpoints._1;
 				List<KPoint> kps = kpoints._2;
@@ -149,42 +146,71 @@ public class KMeans {
 					sse += (float) Math.pow(kp.diff(nextCentroid), 2);
 				}
 
-				HashMap<Integer, Integer> hashMap = new HashMap<>();
-
-				for(KPoint kp: kps){
-					int label = (int)kp.label;
-					if(hashMap.get(label) == null)
-						hashMap.put(label, 0);
-					else
-						hashMap.put(label, hashMap.get(label) + 1);
-				}
-
-				int maxVal = Collections.max(hashMap.values());
-
+				int maxVal = getMaxLabel(kps);
 				float accuracy = (float) maxVal / kps.size();
-				centroidsCorrectCount[key] = maxVal;
-				centroidsCount[key] = kps.size();
-
-				KPoint oldCentroid = c.get(key);
-				float centroidDiff = oldCentroid.diff(nextCentroid);
-				System.out.println("Centroid: " + key + " has diff: " + centroidDiff);
-
-				if(centroidDiff <= 0.7)
-					centroidsState[key] = false;
-				else
-				{
-					c.set(key, nextCentroid);
-					centroidsState[key] = true;
-				}
-
 				builder.append("Centroid is ").append(nextCentroid.toStr()).append('\n');
 				builder.append("SSE is ").append(sse).append('\n');
 				builder.append("Accuracy is ").append(accuracy).append("\n");
 				builder.append("==========================================");
-				ArrayList<String> result = new ArrayList<>();
-				result.add(builder.toString());
+				ArrayList<Tuple2<Integer, String>> result = new ArrayList<>();
+				result.add(new Tuple2<>(key, builder.toString()));
 				return result;
 			});
+
+
+			JavaPairRDD<Integer, KPoint> kMeansNewCentroids = kMeansReduced.flatMapToPair((PairFlatMapFunction<Tuple2<Integer, List<KPoint>>, Integer, KPoint>) kpoints -> {
+				KPoint nextCentroid = null;
+				int key = kpoints._1;
+				List<KPoint> kps = kpoints._2;
+
+				for (KPoint point : kps) {
+					if(nextCentroid == null)
+						nextCentroid = point;
+					else
+						nextCentroid.add(point);
+				}
+
+				nextCentroid.mean();
+
+				int maxVal = getMaxLabel(kps);
+				centroidsCorrectCount[key] = maxVal;
+				centroidsCount[key] = kps.size();
+
+				ArrayList<Tuple2<Integer, KPoint>> result = new ArrayList<>();
+				result.add(new Tuple2<>(key, nextCentroid));
+				return result;
+			});
+
+
+			JavaRDD<KPoint> kMeansCentroidReducer = kMeansNewCentroids.flatMap((FlatMapFunction<Tuple2<Integer, KPoint>, KPoint>) kpoint ->{
+				int key = kpoint._1;
+				KPoint nextCentroid = kpoint._2;
+				KPoint oldCentroid = c.get(key);
+				float centroidDiff = oldCentroid.diff(nextCentroid);
+				System.out.println("Centroid: " + key + " has diff: " + centroidDiff);
+
+				ArrayList<KPoint> itr = new ArrayList<>();
+				if(centroidDiff <= 0.05)
+				{
+					centroidsState[key] = false;
+					itr.add(oldCentroid);
+				}
+				else
+				{
+					centroidsState[key] = true;
+					itr.add(nextCentroid);
+				}
+
+				return itr;
+			});
+
+
+
+			List<KPoint> k = kMeansCentroidReducer.collect();
+			for(int j = 0 ; j < k.size(); j++){
+				c.set(j, k.get(j));
+			}
+
 
 			int totalCount = 0;
 			for(int count: centroidsCount)
@@ -261,6 +287,19 @@ public class KMeans {
 		}
 	}
 
+	private static int getMaxLabel(List<KPoint> kps){
+		HashMap<Integer, Integer> hashMap = new HashMap<>();
+
+		for(KPoint kp: kps){
+			int label = (int)kp.label;
+			if(hashMap.get(label) == null)
+				hashMap.put(label, 0);
+			else
+				hashMap.put(label, hashMap.get(label) + 1);
+		}
+
+		 return Collections.max(hashMap.values());
+	}
 	private static float to_categorical(String str) {
 
 		if (categorical.get(str) == null) {
